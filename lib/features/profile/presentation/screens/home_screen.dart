@@ -1,8 +1,10 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import '../../../../core/di/firebase_providers.dart';
 import '../../../../core_ui/atoms/profile_strength_meter.dart';
 import '../../../../core_ui/atoms/shimmer_loading.dart';
 import '../../domain/models/profile_model.dart';
@@ -16,6 +18,7 @@ class HomeScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final profileAsync = ref.watch(profileProvider);
+    final isLoggedIn = FirebaseAuth.instance.currentUser != null;
 
     void openEdit(UserProfile profile) => context.push<void>('/edit', extra: profile);
 
@@ -41,20 +44,42 @@ class HomeScreen extends ConsumerWidget {
         error: (err, _) => _ErrorView(message: err.toString()),
         data: (profile) => _PortfolioScaffold(
           profile: profile,
+          isLoggedIn: isLoggedIn,
           onEdit: () => openEdit(profile),
           onShare: () => shareProfile(profile),
+          onPublish: isLoggedIn ? () => _publish(context, ref, profile) : null,
         ),
       ),
     );
   }
 }
 
+void _signOut(BuildContext context) async {
+  await FirebaseAuth.instance.signOut();
+  if (context.mounted) context.go('/auth');
+}
+
+Future<void> _publish(BuildContext context, WidgetRef ref, UserProfile profile) async {
+  try {
+    await ref.read(portfolioFirestoreProvider).publish(profile);
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Portfolio published online'), behavior: SnackBarBehavior.floating));
+    }
+  } catch (e) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to publish: $e'), behavior: SnackBarBehavior.floating, backgroundColor: Colors.red));
+    }
+  }
+}
+
 class _PortfolioScaffold extends StatelessWidget {
-  const _PortfolioScaffold({required this.profile, required this.onEdit, required this.onShare});
+  const _PortfolioScaffold({required this.profile, required this.isLoggedIn, required this.onEdit, required this.onShare, this.onPublish});
 
   final UserProfile profile;
+  final bool isLoggedIn;
   final VoidCallback onEdit;
   final VoidCallback onShare;
+  final VoidCallback? onPublish;
 
   bool get _isEmpty =>
       profile.fullName.isEmpty &&
@@ -71,11 +96,19 @@ class _PortfolioScaffold extends StatelessWidget {
       appBar: AppBar(
         title: const Text('ProfileForge'),
         actions: [
+          IconButton(icon: const Icon(Icons.explore_outlined), onPressed: () => context.push('/explore'), tooltip: 'Explore'),
+          IconButton(icon: const Icon(Icons.search), onPressed: () => context.push('/discover'), tooltip: 'Discover'),
+          IconButton(icon: const Icon(Icons.cloud_upload_outlined), onPressed: onPublish, tooltip: 'Publish online'),
           IconButton(icon: const Icon(Icons.share_outlined), onPressed: _isEmpty ? null : onShare, tooltip: 'Share portfolio'),
           IconButton(icon: const Icon(Icons.edit_outlined), onPressed: onEdit, tooltip: 'Edit portfolio'),
+          IconButton(
+            icon: Icon(isLoggedIn ? Icons.logout : Icons.login),
+            onPressed: () => isLoggedIn ? _signOut(context) : context.push('/auth'),
+            tooltip: isLoggedIn ? 'Sign out' : 'Sign in',
+          ),
         ],
       ),
-      body: _isEmpty ? _EmptyState(onEdit: onEdit) : _PortfolioBody(profile: profile, onEdit: onEdit, onShare: onShare),
+      body: _isEmpty ? _EmptyState(onEdit: onEdit, isLoggedIn: isLoggedIn) : _PortfolioBody(profile: profile, onEdit: onEdit, onShare: onShare),
       floatingActionButton: _isEmpty ? null : FloatingActionButton.extended(onPressed: onEdit, icon: const Icon(Icons.edit), label: const Text('Edit'), tooltip: 'Edit portfolio'),
     );
   }
@@ -401,9 +434,10 @@ class _ErrorView extends StatelessWidget {
 }
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState({required this.onEdit});
+  const _EmptyState({required this.onEdit, required this.isLoggedIn});
 
   final VoidCallback onEdit;
+  final bool isLoggedIn;
 
   @override
   Widget build(BuildContext context) {
